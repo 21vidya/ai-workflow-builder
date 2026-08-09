@@ -25,9 +25,17 @@ export default async function handler(req: Request, res: Response) {
 
     console.log("Received workflow_id:", workflow_id);
 
+    /*
+     * TEMPORARY TEST
+     * We are NOT calling another endpoint yet.
+     *
+     * This confirms that the GraphQL Action can successfully
+     * pass the workflow ID to the Function.
+     */
+
     return res.status(200).json({
       success: true,
-      message: "triggerWorkflowRun received",
+      message: "Workflow trigger request received",
       workflow_id,
     });
   } catch (error) {
@@ -35,7 +43,7 @@ export default async function handler(req: Request, res: Response) {
 
     return res.status(500).json({
       success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: "Internal server error",
     });
   }
 }
