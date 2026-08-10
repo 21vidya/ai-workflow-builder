@@ -11,12 +11,13 @@ export default async function handler(req: Request, res: Response) {
     "Content-Type, Authorization"
   );
 
-  // Handle browser preflight request
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
 
+  // --------------------------------------------------
   // Only POST is allowed
+  // --------------------------------------------------
   if (req.method !== "POST") {
     return res.status(405).json({
       success: false,
@@ -25,10 +26,7 @@ export default async function handler(req: Request, res: Response) {
   }
 
   try {
-    console.log(
-      "Incoming body:",
-      JSON.stringify(req.body)
-    );
+    console.log("Incoming body:", JSON.stringify(req.body));
 
     // --------------------------------------------------
     // 1. Get workflow_id
@@ -48,22 +46,20 @@ export default async function handler(req: Request, res: Response) {
     // --------------------------------------------------
     // 2. Environment variables
     // --------------------------------------------------
-    const graphqlUrl = process.env.NHOST_GRAPHQL_URL;
-    const adminSecret = process.env.NHOST_ADMIN_SECRET;
+    const graphqlUrl: string =
+  process.env.NHOST_GRAPHQL_URL ?? "";
 
-    if (!graphqlUrl) {
-      throw new Error(
-        "NHOST_GRAPHQL_URL is not configured"
-      );
-    }
+const adminSecret: string =
+  process.env.NHOST_ADMIN_SECRET ?? "";
 
-    if (!adminSecret) {
-      throw new Error(
-        "NHOST_ADMIN_SECRET is not configured"
-      );
-    }
-    const graphqlEndpoint: string = graphqlUrl;
-    const graphqlAdminSecret: string = adminSecret;
+if (!graphqlUrl) {
+  throw new Error("NHOST_GRAPHQL_URL is not configured");
+}
+
+if (!adminSecret) {
+  throw new Error("NHOST_ADMIN_SECRET is not configured");
+}
+
     // --------------------------------------------------
     // 3. GraphQL helper
     // --------------------------------------------------
@@ -71,52 +67,19 @@ export default async function handler(req: Request, res: Response) {
       query: string,
       variables: Record<string, unknown>
     ) {
-      const response = await fetch(graphqlEndpoint, {
+      const response = await fetch(graphqlUrl!, {
         method: "POST",
-
         headers: {
           "Content-Type": "application/json",
-          "x-hasura-admin-secret": graphqlAdminSecret,
+          "x-hasura-admin-secret": adminSecret,
         },
-
         body: JSON.stringify({
           query,
           variables,
         }),
       });
 
-      const result: {
-        data?: {
-          workflows?: Array<{
-            id: string;
-            name: string;
-          }>;
-          workflow_steps?: Array<{
-            id: string;
-            workflow_id: string;
-            step_order: number;
-            name: string;
-            type: string;
-            config: unknown;
-          }>;
-          insert_workflow_runs_one?: {
-            id: string;
-            workflow_id: string;
-            status: string;
-            started_at: string | null;
-          };
-          insert_step_runs_one?: {
-            id: string;
-            workflow_run_id: string;
-            step_id: string;
-            status: string;
-            input: unknown;
-          };
-        };
-        errors?: Array<{
-          message: string;
-        }>;
-      } = await response.json();
+      const result = await response.json();
 
       console.log(
         "GraphQL result:",
@@ -132,21 +95,18 @@ export default async function handler(req: Request, res: Response) {
       if (result.errors) {
         throw new Error(
           result.errors
-            .map(
-              (error: { message: string }) =>
-                error.message
-            )
+            .map((error: { message: string }) => error.message)
             .join(", ")
         );
       }
 
-      return result.data;
+      return result;
     }
 
     // --------------------------------------------------
-    // 4. Find workflow
+    // 4. Check workflow exists
     // --------------------------------------------------
-    const workflowQuery = `
+    const getWorkflowQuery = `
       query GetWorkflow($workflow_id: uuid!) {
         workflows(
           where: {
@@ -161,15 +121,15 @@ export default async function handler(req: Request, res: Response) {
       }
     `;
 
-    const workflowData = await graphqlRequest(
-      workflowQuery,
+    const workflowResult = await graphqlRequest(
+      getWorkflowQuery,
       {
         workflow_id,
       }
     );
 
     const workflows =
-      workflowData?.workflows ?? [];
+      workflowResult.data?.workflows ?? [];
 
     if (workflows.length === 0) {
       return res.status(404).json({
@@ -186,56 +146,9 @@ export default async function handler(req: Request, res: Response) {
     );
 
     // --------------------------------------------------
-    // 5. Get workflow steps
+    // 5. Create workflow_runs row
     // --------------------------------------------------
-    const stepsQuery = `
-      query GetWorkflowSteps($workflow_id: uuid!) {
-        workflow_steps(
-          where: {
-            workflow_id: {
-              _eq: $workflow_id
-            }
-          }
-          order_by: {
-            step_order: asc
-          }
-        ) {
-          id
-          workflow_id
-          step_order
-          name
-          type
-          config
-        }
-      }
-    `;
-
-    const stepsData = await graphqlRequest(
-      stepsQuery,
-      {
-        workflow_id,
-      }
-    );
-
-    const steps =
-      stepsData?.workflow_steps ?? [];
-
-    console.log(
-      `Found ${steps.length} workflow steps`
-    );
-
-    if (steps.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Workflow has no steps",
-        workflow_id,
-      });
-    }
-
-    // --------------------------------------------------
-    // 6. Create workflow run
-    // --------------------------------------------------
-    const createWorkflowRunMutation = `
+    const createRunMutation = `
       mutation CreateWorkflowRun(
         $workflow_id: uuid!
         $status: String!
@@ -250,20 +163,22 @@ export default async function handler(req: Request, res: Response) {
           workflow_id
           status
           started_at
+          completed_at
+          error
         }
       }
     `;
 
-    const runData = await graphqlRequest(
-      createWorkflowRunMutation,
+    const runResult = await graphqlRequest(
+      createRunMutation,
       {
-        workflow_id,
+        workflow_id: workflow.id,
         status: "running",
       }
     );
 
     const workflowRun =
-      runData?.insert_workflow_runs_one;
+      runResult.data?.insert_workflow_runs_one;
 
     if (!workflowRun) {
       throw new Error(
@@ -276,88 +191,17 @@ export default async function handler(req: Request, res: Response) {
     );
 
     // --------------------------------------------------
-    // 7. Create step runs
-    // --------------------------------------------------
-    const stepRunResults: Array<{
-      step_id: string;
-      step_name: string;
-      step_order: number;
-      type: string;
-      step_run_id: string | undefined;
-      status: string | undefined;
-    }> = [];
-
-    for (const step of steps) {
-      const createStepRunMutation = `
-        mutation CreateStepRun(
-          $workflow_run_id: uuid!
-          $step_id: uuid!
-          $status: String!
-          $input: jsonb
-        ) {
-          insert_step_runs_one(
-            object: {
-              workflow_run_id: $workflow_run_id
-              step_id: $step_id
-              status: $status
-              input: $input
-            }
-          ) {
-            id
-            workflow_run_id
-            step_id
-            status
-            input
-          }
-        }
-      `;
-
-      const stepRunData =
-        await graphqlRequest(
-          createStepRunMutation,
-          {
-            workflow_run_id: workflowRun.id,
-            step_id: step.id,
-            status: "pending",
-            input: {},
-          }
-        );
-
-      const stepRun =
-        stepRunData?.insert_step_runs_one;
-
-      stepRunResults.push({
-        step_id: step.id,
-        step_name: step.name,
-        step_order: step.step_order,
-        type: step.type,
-        step_run_id: stepRun?.id,
-        status: stepRun?.status,
-      });
-    }
-
-    // --------------------------------------------------
-    // 8. Return success
+    // 6. Return success
     // --------------------------------------------------
     return res.status(200).json({
       success: true,
-      message:
-        "Workflow run created successfully",
-
-      workflow: {
-        id: workflow.id,
-        name: workflow.name,
-      },
-
-      workflow_run: {
-        id: workflowRun.id,
-        workflow_id: workflowRun.workflow_id,
-        status: workflowRun.status,
-        started_at: workflowRun.started_at,
-      },
-
-      steps: stepRunResults,
+      message: "Workflow run created successfully",
+      workflow_id: workflow.id,
+      workflow_name: workflow.name,
+      workflow_run_id: workflowRun.id,
+      status: workflowRun.status,
     });
+
   } catch (error) {
     const message =
       error instanceof Error
