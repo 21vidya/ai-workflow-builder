@@ -23,27 +23,98 @@ export default async function handler(req: Request, res: Response) {
       });
     }
 
-    console.log("Received workflow_id:", workflow_id);
+    const graphqlUrl = process.env.NHOST_GRAPHQL_URL;
+    const adminSecret = process.env.NHOST_ADMIN_SECRET;
 
-    /*
-     * TEMPORARY TEST
-     * We are NOT calling another endpoint yet.
-     *
-     * This confirms that the GraphQL Action can successfully
-     * pass the workflow ID to the Function.
-     */
+    if (!graphqlUrl) {
+      throw new Error("NHOST_GRAPHQL_URL is not configured");
+    }
+
+    if (!adminSecret) {
+      throw new Error("NHOST_ADMIN_SECRET is not configured");
+    }
+
+    // Check that the workflow exists
+    const query = `
+      query GetWorkflow($workflow_id: uuid!) {
+        workflows(
+          where: {
+            id: {
+              _eq: $workflow_id
+            }
+          }
+        ) {
+          id
+          name
+        }
+      }
+    `;
+
+    const response = await fetch(graphqlUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-hasura-admin-secret": adminSecret,
+      },
+      body: JSON.stringify({
+        query,
+        variables: {
+          workflow_id,
+        },
+      }),
+    });
+
+    const result = await response.json();
+
+    console.log("GraphQL result:", JSON.stringify(result));
+
+    if (!response.ok) {
+      throw new Error(
+        `GraphQL request failed: ${response.status}`
+      );
+    }
+
+    if (result.errors) {
+  throw new Error(
+    result.errors
+      .map((error: { message: string }) => error.message)
+      .join(", ")
+  );
+}
+
+    const workflows = result.data?.workflows ?? [];
+
+    if (workflows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Workflow not found",
+        workflow_id,
+      });
+    }
+
+    const workflow = workflows[0];
+
+    console.log(
+      `Workflow found: ${workflow.name} (${workflow.id})`
+    );
 
     return res.status(200).json({
       success: true,
-      message: "Workflow trigger request received",
-      workflow_id,
+      message: "Workflow found successfully",
+      workflow_id: workflow.id,
+      workflow_name: workflow.name,
     });
   } catch (error) {
-    console.error("Function error:", error);
+    const message =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    console.error("Function error:", message);
 
     return res.status(500).json({
       success: false,
-      error: "Internal server error",
+      error: message,
     });
   }
 }
